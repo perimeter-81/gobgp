@@ -22,9 +22,8 @@ import unittest
 import collections
 collections.Callable = collections.abc.Callable
 
-import nose
 
-from lib.noseplugin import OptionParser, parser_option
+from lib.noseplugin import parser_option
 
 from lib import base
 from lib.base import (
@@ -84,29 +83,15 @@ class GoBGPTestBase(unittest.TestCase):
 
     def test_02_check_gobgp_global_rib(self):
         for q in self.quaggas.values():
-            # paths expected to exist in gobgp's global rib
-            routes = list(q.routes.keys())
-            timeout = 120
-            interval = 1
-            count = 0
+            expected_routes = set(q.routes.keys())
 
-            while True:
-                # gobgp's global rib
+            def _has_expected_routes():
                 state = self.gobgp.get_neighbor_state(q)
                 self.assertEqual(state, BGP_FSM_ESTABLISHED)
-                global_rib = [p['prefix'] for p in self.gobgp.get_global_rib()]
+                global_rib = {p['prefix'] for p in self.gobgp.get_global_rib()}
+                return expected_routes.issubset(global_rib)
 
-                for p in global_rib:
-                    if p in routes:
-                        routes.remove(p)
-
-                if len(routes) == 0:
-                    break
-
-                time.sleep(interval)
-                count += interval
-                if count >= timeout:
-                    raise Exception('timeout')
+            wait_for_completion(_has_expected_routes)
 
     # check gobgp properly add it's own asn to aspath
     def test_03_check_gobgp_adj_out_rib(self):
@@ -117,29 +102,21 @@ class GoBGPTestBase(unittest.TestCase):
 
     # check routes are properly advertised to all BGP speaker
     def test_04_check_quagga_global_rib(self):
-        interval = 1
-        timeout = int(120 / interval)
+        expected_routes = {r for c in self.quaggas.values() for r in c.routes}
         for q in self.quaggas.values():
-            done = False
-            for _ in range(timeout):
-                if done:
-                    break
+            def _has_expected_routes():
                 global_rib = q.get_global_rib()
                 global_rib = [p['prefix'] for p in global_rib]
                 if len(global_rib) < len(self.quaggas):
-                    time.sleep(interval)
-                    continue
+                    return False
 
                 self.assertEqual(len(global_rib), len(self.quaggas))
 
-                for c in self.quaggas.values():
-                    for r in c.routes:
-                        self.assertTrue(r in global_rib)
-                done = True
-            if done:
-                continue
-            # should not reach here
-            raise AssertionError
+                for route in expected_routes:
+                    self.assertTrue(route in global_rib)
+                return True
+
+            wait_for_completion(_has_expected_routes)
 
     def test_05_add_quagga(self):
         q4 = QuaggaBGPContainer(name='q4', asn=65004, router_id='192.168.0.5')
@@ -203,23 +180,18 @@ class GoBGPTestBase(unittest.TestCase):
         q2.wait_for(expected_state=BGP_FSM_ESTABLISHED, peer=q5)
         q3.wait_for(expected_state=BGP_FSM_ESTABLISHED, peer=q5)
 
-        timeout = 120
-        interval = 1
-        count = 0
-        while True:
+        def _has_expected_nexthop():
             paths = self.gobgp.get_adj_rib_out(q1, '10.0.6.0/24')
-            if len(paths) > 0:
-                path = paths[0]
-                print("{0}'s nexthop is {1}".format(path['nlri']['prefix'],
-                                                    path['nexthop']))
-                n_addrs = [i[1].split('/')[0] for i in self.gobgp.ip_addrs]
-                if path['nexthop'] in n_addrs:
-                    break
+            if not paths:
+                return False
 
-            time.sleep(interval)
-            count += interval
-            if count >= timeout:
-                raise Exception('timeout')
+            path = paths[0]
+            print("{0}'s nexthop is {1}".format(path['nlri']['prefix'],
+                                                path['nexthop']))
+            n_addrs = [i[1].split('/')[0] for i in self.gobgp.ip_addrs]
+            return path['nexthop'] in n_addrs
+
+        wait_for_completion(_has_expected_nexthop)
 
     def test_10_originate_path(self):
         self.gobgp.add_route('10.10.0.0/24')
@@ -347,10 +319,10 @@ class GoBGPTestBase(unittest.TestCase):
 
         paths = g1.get_adj_rib_out(q1, '30.0.0.0/24')
         self.assertEqual(len(paths), 1)
-        self.assertNotIn('source-id', paths[0])
+        self.assertNotIn('peer-id', paths[0])
         paths = g1.get_adj_rib_out(q2, '30.0.0.0/24')
         self.assertEqual(len(paths), 1)
-        self.assertNotIn('source-id', paths[0])
+        self.assertNotIn('peer-id', paths[0])
 
         g1.local('gobgp global rib del 30.0.0.0/24')
 
@@ -359,7 +331,7 @@ class GoBGPTestBase(unittest.TestCase):
             self.assertEqual(len(paths), 0)
             paths = g1.get_adj_rib_out(q2, '30.0.0.0/24')
             self.assertEqual(len(paths), 1)
-            self.assertEqual(paths[0]['source-id'], '192.168.0.2')
+            self.assertEqual(paths[0]['peer-id'], '192.168.0.2')
 
         assert_several_times(f)
 
@@ -461,13 +433,13 @@ class GoBGPTestBase(unittest.TestCase):
         self.assertEqual(len(paths), 0)
         paths = g1.get_adj_rib_out(g4, '50.0.0.0/24')
         self.assertEqual(len(paths), 1)
-        self.assertEqual(paths[0]['source-id'], '192.168.0.8')
+        self.assertEqual(paths[0]['peer-id'], '192.168.0.8')
 
         g3.local('gobgp global rib del 50.0.0.0/24')
 
         paths = g1.get_adj_rib_out(g3, '50.0.0.0/24')
         self.assertEqual(len(paths), 1)
-        self.assertEqual(paths[0]['source-id'], '192.168.0.9')
+        self.assertEqual(paths[0]['peer-id'], '192.168.0.9')
         paths = g1.get_adj_rib_out(g4, '50.0.0.0/24')
         self.assertEqual(len(paths), 0)
 
@@ -575,12 +547,3 @@ class GoBGPTestBase(unittest.TestCase):
         # config doesn't explicitly "know about" the peer
         q9.wait_for(expected_state=BGP_FSM_ESTABLISHED, peer=g6, timeout=30)
 
-
-if __name__ == '__main__':
-    output = local("which docker 2>&1 > /dev/null ; echo $?", capture=True)
-    if int(output) != 0:
-        print("docker not found")
-        sys.exit(1)
-
-    nose.main(argv=sys.argv, addplugins=[OptionParser()],
-              defaultTest=sys.argv[0])

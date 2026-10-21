@@ -9,14 +9,15 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	apb "google.golang.org/protobuf/types/known/anypb"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/server"
+	"github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/server"
 )
 
 func TestMetrics(test *testing.T) {
-	assert := assert.New(test)
+	assert, require := assert.New(test), require.New(test)
 	s := server.NewBgpServer()
 
 	registry := prometheus.NewRegistry()
@@ -30,7 +31,7 @@ func TestMetrics(test *testing.T) {
 			ListenPort: 10179,
 		},
 	})
-	assert.Nil(err)
+	assert.NoError(err)
 	defer s.StopBgp(context.Background(), &api.StopBgpRequest{})
 
 	p1 := &api.Peer{
@@ -43,7 +44,7 @@ func TestMetrics(test *testing.T) {
 		},
 	}
 	err = s.AddPeer(context.Background(), &api.AddPeerRequest{Peer: p1})
-	assert.Nil(err)
+	assert.NoError(err)
 
 	t := server.NewBgpServer()
 	go t.Serve()
@@ -54,7 +55,7 @@ func TestMetrics(test *testing.T) {
 			ListenPort: -1,
 		},
 	})
-	assert.Nil(err)
+	assert.NoError(err)
 	defer t.StopBgp(context.Background(), &api.StopBgpRequest{})
 
 	p2 := &api.Peer{
@@ -73,75 +74,117 @@ func TestMetrics(test *testing.T) {
 		},
 	}
 
-	ch := make(chan struct{})
-	s.WatchEvent(context.Background(), &api.WatchEventRequest{Peer: &api.WatchEventRequest_Peer{}}, func(r *api.WatchEventResponse) {
-		if peer := r.GetPeer(); peer != nil {
-			if peer.Type == api.WatchEventResponse_PeerEvent_STATE && peer.Peer.State.SessionState == api.PeerState_ESTABLISHED {
-				close(ch)
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	stateCh := make(chan struct{})
+	err = s.WatchEvent(watchCtx, server.WatchEventMessageCallbacks{
+		OnPeerUpdate: func(peer *apiutil.WatchEventMessage_PeerEvent, _ time.Time) {
+			if peer.Type == apiutil.PEER_EVENT_STATE && peer.Peer.State.SessionState == bgp.BGP_FSM_ESTABLISHED {
+				watchCancel()
+				close(stateCh)
 			}
-		}
-	})
+		},
+	}, server.WatchPeer())
+
+	assert.NoError(err)
 
 	err = t.AddPeer(context.Background(), &api.AddPeerRequest{Peer: p2})
-	assert.Nil(err)
-	<-ch
+	assert.NoError(err)
+	<-stateCh
+
+	metrics, err := registry.Gather()
+	assert.NoError(err)
+
+	adminState := getMetric(metrics, "bgp_peer_admin_state")
+	require.NotNil(adminState)
+	assert.Equal(float64(api.PeerState_ADMIN_STATE_UP),
+		adminState.Metric[0].Gauge.GetValue())
+
+	sessionState := getMetric(metrics, "bgp_peer_session_state")
+	require.NotNil(sessionState)
+	assert.Equal(float64(api.PeerState_SESSION_STATE_ESTABLISHED),
+		sessionState.Metric[0].Gauge.GetValue())
+
+	peerType := getMetric(metrics, "bgp_peer_type")
+	require.NotNil(peerType)
+	assert.Equal(float64(api.PeerType_PEER_TYPE_EXTERNAL),
+		peerType.Metric[0].Gauge.GetValue())
 
 	family := &api.Family{
 		Afi:  api.Family_AFI_IP,
 		Safi: api.Family_SAFI_UNICAST,
 	}
 
+	nlri1 := &api.NLRI{Nlri: &api.NLRI_Prefix{Prefix: &api.IPAddressPrefix{
+		Prefix:    "10.1.0.0",
+		PrefixLen: 24,
+	}}}
+
+	attrs := []*api.Attribute{
+		{
+			Attr: &api.Attribute_Origin{Origin: &api.OriginAttribute{
+				Origin: 0,
+			}},
+		},
+		{
+			Attr: &api.Attribute_NextHop{NextHop: &api.NextHopAttribute{
+				NextHop: "10.0.0.1",
+			}},
+		},
+	}
+	apiPath := &api.Path{
+		Family: family,
+		Nlri:   nlri1,
+		Pattrs: attrs,
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-	ch = make(chan struct{})
+	goroutineCh := make(chan any)
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
-				ch <- struct{}{}
+				close(goroutineCh)
 				return
 			default:
-				nlri1, _ := apb.New(&api.IPAddressPrefix{
-					Prefix:    "10.1.0.0",
-					PrefixLen: 24,
-				})
-
-				a1, _ := apb.New(&api.OriginAttribute{
-					Origin: 0,
-				})
-				a2, _ := apb.New(&api.NextHopAttribute{
-					NextHop: "10.0.0.1",
-				})
-				attrs := []*apb.Any{a1, a2}
-
-				t.AddPath(context.Background(), &api.AddPathRequest{
-					TableType: api.TableType_GLOBAL,
-					Path: &api.Path{
-						Family: family,
-						Nlri:   nlri1,
-						Pattrs: attrs,
+				family := bgp.NewFamily(uint16(apiPath.Family.Afi), uint8(apiPath.Family.Safi))
+				nlri, err := apiutil.GetNativeNlri(apiPath)
+				if err != nil {
+					test.Errorf("invalid nlri: %v", err)
+				}
+				pattrs, err := apiutil.GetNativePathAttributes(apiPath)
+				if err != nil {
+					test.Errorf("invalid path attributes: %v", err)
+				}
+				_, err = t.AddPath(apiutil.AddPathRequest{
+					Paths: []*apiutil.Path{
+						{
+							Family: family,
+							Nlri:   nlri,
+							Attrs:  pattrs,
+						},
 					},
 				})
-				t.DeletePath(context.Background(), &api.DeletePathRequest{
-					TableType: api.TableType_GLOBAL,
-					Path: &api.Path{
-						Family: family,
-						Nlri:   nlri1,
-						Pattrs: attrs,
-					},
-				})
+
+				assert.NoError(err)
+				err = t.DeletePath(apiutil.DeletePathRequest{Paths: []*apiutil.Path{{
+					Family: family,
+					Nlri:   nlri,
+					Attrs:  pattrs,
+				}}})
+				assert.NoError(err)
 			}
 		}
 	}()
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		metrics, err := registry.Gather()
-		assert.Nil(err)
+		assert.NoError(err)
 		assert.NotEmpty(metrics)
 		time.Sleep(10 * time.Millisecond)
 	}
 
 	cancel()
-	<-ch
+	<-goroutineCh
 }
 
 func TestFSMLoopMetrics(t *testing.T) {
@@ -171,6 +214,9 @@ func TestFSMLoopMetrics(t *testing.T) {
 	})
 	require.NoError(err)
 	defer s.StopBgp(context.Background(), &api.StopBgpRequest{})
+
+	// wait to ensure we started BGP
+	time.Sleep(1 * time.Second)
 
 	// StartBgp counts as single management operation
 	metrics, err = registry.Gather()

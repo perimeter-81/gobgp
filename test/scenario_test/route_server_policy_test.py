@@ -22,13 +22,7 @@ import inspect
 import collections
 collections.Callable = collections.abc.Callable
 
-import nose
-from nose.tools import (
-    assert_true,
-    assert_false,
-)
-
-from lib.noseplugin import OptionParser, parser_option
+from lib.noseplugin import parser_option
 
 from lib import base
 from lib.base import (
@@ -37,6 +31,7 @@ from lib.base import (
     BGP_ATTR_TYPE_COMMUNITIES,
     BGP_ATTR_TYPE_EXTENDED_COMMUNITIES,
     local,
+    wait_for,
 )
 from lib.gobgp import GoBGPContainer
 from lib.quagga import QuaggaBGPContainer
@@ -58,19 +53,6 @@ def lookup_scenario(name):
         if value.__name__ == name:
             return value
     return None
-
-
-def wait_for(f, timeout=120):
-    interval = 1
-    count = 0
-    while True:
-        if f():
-            return
-
-        time.sleep(interval)
-        count += interval
-        if count >= timeout:
-            raise Exception('timeout')
 
 
 @register_scenario
@@ -122,7 +104,7 @@ class ImportPolicy(object):
         g1.set_prefix_set(ps0)
 
         ns0 = {'neighbor-set-name': 'ns0',
-               'neighbor-info-list': [g1.peers[e1]['neigh_addr'].split('/')[0]]}
+               'neighbor-info-list': [g1.peers[q2]['neigh_addr'].split('/')[0]]}
         g1.set_neighbor_set(ns0)
 
         st0 = {'name': 'st0',
@@ -133,7 +115,7 @@ class ImportPolicy(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         # this will be blocked
         e1.add_route('192.168.2.0/24')
@@ -148,7 +130,7 @@ class ImportPolicy(object):
         wait_for(lambda: len(env.g1.get_local_rib(env.q1)) == 2)
         wait_for(lambda: len(env.g1.get_adj_rib_out(env.q1)) == 2)
         wait_for(lambda: len(env.q1.get_global_rib()) == 2)
-        wait_for(lambda: len(env.g1.get_local_rib(env.q2)) == 1)
+        wait_for(lambda: len(env.g1.get_local_rib(env.q2)) == 2)
         wait_for(lambda: len(env.g1.get_adj_rib_out(env.q2)) == 1)
         wait_for(lambda: len(env.q2.get_global_rib()) == 1)
 
@@ -274,7 +256,7 @@ class ImportPolicyUpdate(object):
         g1.set_prefix_set(ps0)
 
         ns0 = {'neighbor-set-name': 'ns0',
-               'neighbor-info-list': [g1.peers[e1]['neigh_addr'].split('/')[0]]}
+               'neighbor-info-list': [g1.peers[q2]['neigh_addr'].split('/')[0]]}
         g1.set_neighbor_set(ns0)
 
         st0 = {'name': 'st0',
@@ -285,7 +267,7 @@ class ImportPolicyUpdate(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.2.0/24')
         e1.add_route('192.168.20.0/24')
@@ -303,7 +285,7 @@ class ImportPolicyUpdate(object):
         wait_for(lambda: len(g1.get_local_rib(q1)) == 3)
         wait_for(lambda: len(g1.get_adj_rib_out(q1)) == 3)
         wait_for(lambda: len(q1.get_global_rib()) == 3)
-        wait_for(lambda: len(g1.get_local_rib(q2)) == 1)
+        wait_for(lambda: len(g1.get_local_rib(q2)) == 3)
         wait_for(lambda: len(g1.get_adj_rib_out(q2)) == 1)
         wait_for(lambda: len(q2.get_global_rib()) == 1)
 
@@ -311,7 +293,7 @@ class ImportPolicyUpdate(object):
     def setup2(env):
         g1 = env.g1
         e1 = env.e1
-        # q1 = env.q1
+        q1 = env.q1
         q2 = env.q2
         g1.clear_policy()
 
@@ -322,7 +304,7 @@ class ImportPolicyUpdate(object):
         g1.set_prefix_set(ps0)
 
         ns0 = {'neighbor-set-name': 'ns0',
-               'neighbor-info-list': [g1.peers[e1]['neigh_addr'].split('/')[0]]}
+               'neighbor-info-list': [g1.peers[q2]['neigh_addr'].split('/')[0]]}
         g1.set_neighbor_set(ns0)
 
         st0 = {'name': 'st0',
@@ -333,8 +315,11 @@ class ImportPolicyUpdate(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
-        g1.softreset(e1)
+        g1.add_policy(policy, q2, 'export')
+        g1.reset(e1)
+
+        for c in [e1, q1, q2]:
+            g1.wait_for(BGP_FSM_ESTABLISHED, c)
 
     @staticmethod
     def check2(env):
@@ -345,7 +330,7 @@ class ImportPolicyUpdate(object):
         wait_for(lambda: len(g1.get_local_rib(q1)) == 3)
         wait_for(lambda: len(g1.get_adj_rib_out(q1)) == 3)
         wait_for(lambda: len(q1.get_global_rib()) == 3)
-        wait_for(lambda: len(g1.get_local_rib(q2)) == 2)
+        wait_for(lambda: len(g1.get_local_rib(q2)) == 3)
         wait_for(lambda: len(g1.get_adj_rib_out(q2)) == 2)
         wait_for(lambda: len(q2.get_global_rib()) == 2)
 
@@ -524,8 +509,8 @@ class ImportPolicyIPV6(object):
         [br01.addif(ctn) for ctn in ctns]
 
         for q in [e1, q1, q2]:
-            g1.add_peer(q, is_rs_client=True, bridge=br01.name)
-            q.add_peer(g1, bridge=br01.name)
+            g1.add_peer(q, is_rs_client=True, bridge=br01.name, v6=True)
+            q.add_peer(g1, bridge=br01.name, v6=True)
 
             env.g1 = g1
             env.e1 = e1
@@ -547,7 +532,7 @@ class ImportPolicyIPV6(object):
         g1.set_prefix_set(ps0)
 
         ns0 = {'neighbor-set-name': 'ns0',
-               'neighbor-info-list': [g1.peers[e1]['neigh_addr'].split('/')[0]]}
+               'neighbor-info-list': [g1.peers[q2]['neigh_addr'].split('/')[0]]}
         g1.set_neighbor_set(ns0)
 
         st0 = {'name': 'st0',
@@ -558,7 +543,7 @@ class ImportPolicyIPV6(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         # this will be blocked
         e1.add_route('2001::/64', rf='ipv6')
@@ -573,7 +558,7 @@ class ImportPolicyIPV6(object):
         wait_for(lambda: len(env.g1.get_local_rib(env.q1, rf='ipv6')) == 2)
         wait_for(lambda: len(env.g1.get_adj_rib_out(env.q1, rf='ipv6')) == 2)
         wait_for(lambda: len(env.q1.get_global_rib(rf='ipv6')) == 2)
-        wait_for(lambda: len(env.g1.get_local_rib(env.q2, rf='ipv6')) == 1)
+        wait_for(lambda: len(env.g1.get_local_rib(env.q2, rf='ipv6')) == 2)
         wait_for(lambda: len(env.g1.get_adj_rib_out(env.q2, rf='ipv6')) == 1)
         wait_for(lambda: len(env.q2.get_global_rib(rf='ipv6')) == 1)
 
@@ -698,7 +683,7 @@ class ImportPolicyIPV6Update(object):
         g1.set_prefix_set(ps0)
 
         ns0 = {'neighbor-set-name': 'ns0',
-               'neighbor-info-list': [g1.peers[e1]['neigh_addr'].split('/')[0]]}
+               'neighbor-info-list': [g1.peers[q2]['neigh_addr'].split('/')[0]]}
         g1.set_neighbor_set(ns0)
 
         st0 = {'name': 'st0',
@@ -709,7 +694,7 @@ class ImportPolicyIPV6Update(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('2001:0:10:2::/64', rf='ipv6')
         e1.add_route('2001:0:10:20::/64', rf='ipv6')
@@ -723,7 +708,7 @@ class ImportPolicyIPV6Update(object):
         wait_for(lambda: len(env.g1.get_local_rib(env.q1, rf='ipv6')) == 3)
         wait_for(lambda: len(env.g1.get_adj_rib_out(env.q1, rf='ipv6')) == 3)
         wait_for(lambda: len(env.q1.get_global_rib(rf='ipv6')) == 3)
-        wait_for(lambda: len(env.g1.get_local_rib(env.q2, rf='ipv6')) == 1)
+        wait_for(lambda: len(env.g1.get_local_rib(env.q2, rf='ipv6')) == 3)
         wait_for(lambda: len(env.g1.get_adj_rib_out(env.q2, rf='ipv6')) == 1)
         wait_for(lambda: len(env.q2.get_global_rib(rf='ipv6')) == 1)
 
@@ -731,7 +716,7 @@ class ImportPolicyIPV6Update(object):
     def setup2(env):
         g1 = env.g1
         e1 = env.e1
-        # q1 = env.q1
+        q1 = env.q1
         q2 = env.q2
 
         p0 = {'ip-prefix': '2001:0:10:2::/64'}
@@ -741,7 +726,7 @@ class ImportPolicyIPV6Update(object):
         g1.set_prefix_set(ps0)
 
         ns0 = {'neighbor-set-name': 'ns0',
-               'neighbor-info-list': [g1.peers[e1]['neigh_addr'].split('/')[0]]}
+               'neighbor-info-list': [g1.peers[q2]['neigh_addr'].split('/')[0]]}
         g1.set_neighbor_set(ns0)
 
         st0 = {'name': 'st0',
@@ -753,15 +738,18 @@ class ImportPolicyIPV6Update(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
-        g1.softreset(e1, rf='ipv6')
+        g1.add_policy(policy, q2, 'export')
+        g1.reset(e1)
+
+        for c in [e1, q1, q2]:
+            g1.wait_for(BGP_FSM_ESTABLISHED, c)
 
     @staticmethod
     def check2(env):
         wait_for(lambda: len(env.g1.get_local_rib(env.q1, rf='ipv6')) == 3)
         wait_for(lambda: len(env.g1.get_adj_rib_out(env.q1, rf='ipv6')) == 3)
         wait_for(lambda: len(env.q1.get_global_rib(rf='ipv6')) == 3)
-        wait_for(lambda: len(env.g1.get_local_rib(env.q2, rf='ipv6')) == 2)
+        wait_for(lambda: len(env.g1.get_local_rib(env.q2, rf='ipv6')) == 3)
         wait_for(lambda: len(env.g1.get_adj_rib_out(env.q2, rf='ipv6')) == 2)
         wait_for(lambda: len(env.q2.get_global_rib(rf='ipv6')) == 2)
 
@@ -924,12 +912,12 @@ class ImportPolicyAsPathLengthCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
-        # this will be blocked
-        e1.add_route('192.168.100.0/24', aspath=list(range(e1.asn, e1.asn - 10, -1)))
-        # this will pass
-        e1.add_route('192.168.200.0/24', aspath=list(range(e1.asn, e1.asn - 8, -1)))
+        # this will be blocked (length 10, >= 10)
+        e1.add_route('192.168.100.0/24', aspath=[e1.asn] + list(range(65100, 65109)))
+        # this will pass (length 8, < 10)
+        e1.add_route('192.168.200.0/24', aspath=[e1.asn] + list(range(65100, 65107)))
 
         for c in [e1, q1, q2]:
             g1.wait_for(BGP_FSM_ESTABLISHED, c)
@@ -943,7 +931,7 @@ class ImportPolicyAsPathLengthCondition(object):
         wait_for(lambda: len(g1.get_local_rib(q1)) == 2)
         wait_for(lambda: len(g1.get_adj_rib_out(q1)) == 2)
         wait_for(lambda: len(q1.get_global_rib()) == 2)
-        wait_for(lambda: len(g1.get_local_rib(q2)) == 1)
+        wait_for(lambda: len(g1.get_local_rib(q2)) == 2)
         wait_for(lambda: len(g1.get_adj_rib_out(q2)) == 1)
         wait_for(lambda: len(q2.get_global_rib()) == 1)
 
@@ -984,12 +972,12 @@ class ImportPolicyAsPathCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
-        # this will be blocked
-        e1.add_route('192.168.100.0/24', aspath=list(range(e1.asn, e1.asn - 10, -1)))
-        # this will pass
-        e1.add_route('192.168.200.0/24', aspath=list(range(e1.asn - 1, e1.asn - 10, -1)))
+        # this will be blocked (starts with e1.asn, matches ^65001)
+        e1.add_route('192.168.100.0/24', aspath=[e1.asn] + list(range(65100, 65109)))
+        # this will pass (does not start with e1.asn)
+        e1.add_route('192.168.200.0/24', aspath=list(range(65100, 65109)))
 
         for c in [e1, q1, q2]:
             g1.wait_for(BGP_FSM_ESTABLISHED, c)
@@ -1036,12 +1024,12 @@ class ImportPolicyAsPathAnyCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
-        # this will be blocked
-        e1.add_route('192.168.100.0/24', aspath=[65000, 65098, 65010])
-        # this will pass
-        e1.add_route('192.168.200.0/24', aspath=[65000, 65100, 65010])
+        # this will be blocked (contains 65098)
+        e1.add_route('192.168.100.0/24', aspath=[65001, 65098, 65010])
+        # this will pass (does not contain 65098)
+        e1.add_route('192.168.200.0/24', aspath=[65001, 65100, 65010])
 
         for c in [e1, q1, q2]:
             g1.wait_for(BGP_FSM_ESTABLISHED, c)
@@ -1088,12 +1076,12 @@ class ImportPolicyAsPathOriginCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
-        # this will be blocked
-        e1.add_route('192.168.100.0/24', aspath=[65000, 65098, 65090])
-        # this will pass
-        e1.add_route('192.168.200.0/24', aspath=[65000, 65100, 65010])
+        # this will be blocked (ends with 65090, matches 65090$)
+        e1.add_route('192.168.100.0/24', aspath=[65001, 65098, 65090])
+        # this will pass (does not end with 65090)
+        e1.add_route('192.168.200.0/24', aspath=[65001, 65100, 65010])
 
         for c in [e1, q1, q2]:
             g1.wait_for(BGP_FSM_ESTABLISHED, c)
@@ -1140,12 +1128,12 @@ class ImportPolicyAsPathOnlyCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
-        # this will be blocked
+        # this will be blocked (exactly matches ^65100$)
         e1.add_route('192.168.100.0/24', aspath=[65100])
-        # this will pass
-        e1.add_route('192.168.200.0/24', aspath=[65000, 65100, 65010])
+        # this will pass (does not match ^65100$)
+        e1.add_route('192.168.200.0/24', aspath=[65001, 65100, 65010])
 
         for c in [e1, q1, q2]:
             g1.wait_for(BGP_FSM_ESTABLISHED, c)
@@ -1194,12 +1182,12 @@ class ImportPolicyAsPathMismatchCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
-        # this will be blocked
+        # this will be blocked (no community match, but condition mismatch means it passes)
         e1.add_route('192.168.100.0/24', aspath=[65100, 65090])
-        # this will pass
-        e1.add_route('192.168.200.0/24', aspath=[65000, 65100, 65010])
+        # this will pass (no community match)
+        e1.add_route('192.168.200.0/24', aspath=[65001, 65100, 65010])
 
         for c in [e1, q1, q2]:
             g1.wait_for(BGP_FSM_ESTABLISHED, c)
@@ -1254,7 +1242,7 @@ class ImportPolicyCommunityCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         # this will be blocked
         e1.add_route('192.168.100.0/24', community=['65100:10'])
@@ -1305,7 +1293,7 @@ class ImportPolicyCommunityRegexp(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         # this will be blocked
         e1.add_route('192.168.100.0/24', community=['65100:10'])
@@ -1370,7 +1358,7 @@ class ImportPolicyCommunityAction(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.100.0/24', community=['65100:10'])
 
@@ -1396,11 +1384,11 @@ class ImportPolicyCommunityAction(object):
         q1 = env.q1
         q2 = env.q2
         path = g1.get_adj_rib_out(q1)[0]
-        assert_true(community_exists(path, '65100:10'))
-        assert_false(community_exists(path, '65100:20'))
+        assert community_exists(path, '65100:10')
+        assert not community_exists(path, '65100:20')
         path = g1.get_adj_rib_out(q2)[0]
-        assert_true(community_exists(path, '65100:10'))
-        assert_true(community_exists(path, '65100:20'))
+        assert community_exists(path, '65100:10')
+        assert community_exists(path, '65100:20')
 
     @staticmethod
     def executor(env):
@@ -1445,7 +1433,7 @@ class ImportPolicyCommunityReplace(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.100.0/24', community=['65100:10'])
 
@@ -1463,11 +1451,11 @@ class ImportPolicyCommunityReplace(object):
         q1 = env.q1
         q2 = env.q2
         path = g1.get_adj_rib_out(q1)[0]
-        assert_true(community_exists(path, '65100:10'))
-        assert_false(community_exists(path, '65100:20'))
+        assert community_exists(path, '65100:10')
+        assert not community_exists(path, '65100:20')
         path = g1.get_adj_rib_out(q2)[0]
-        assert_false(community_exists(path, '65100:10'))
-        assert_true(community_exists(path, '65100:20'))
+        assert not community_exists(path, '65100:10')
+        assert community_exists(path, '65100:20')
 
     @staticmethod
     def executor(env):
@@ -1512,7 +1500,7 @@ class ImportPolicyCommunityRemove(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.100.0/24', community=['65100:10'])
         e1.add_route('192.168.110.0/24', community=['65100:10', '65100:20'])
@@ -1542,18 +1530,18 @@ class ImportPolicyCommunityRemove(object):
         q2 = env.q2
         adj_out = g1.get_adj_rib_out(q1)
         for path in adj_out:
-            assert_true(community_exists(path, '65100:10'))
+            assert community_exists(path, '65100:10')
             if path['nlri']['prefix'] == '192.168.110.0/24':
-                assert_true(community_exists(path, '65100:20'))
+                assert community_exists(path, '65100:20')
             if path['nlri']['prefix'] == '192.168.120.0/24':
-                assert_true(community_exists(path, '65100:30'))
+                assert community_exists(path, '65100:30')
         adj_out = g1.get_adj_rib_out(q2)
         for path in adj_out:
-            assert_false(community_exists(path, '65100:10'))
+            assert not community_exists(path, '65100:10')
             if path['nlri']['prefix'] == '192.168.110.0/24':
-                assert_false(community_exists(path, '65100:20'))
+                assert not community_exists(path, '65100:20')
             if path['nlri']['prefix'] == '192.168.120.0/24':
-                assert_true(community_exists(path, '65100:30'))
+                assert community_exists(path, '65100:30')
 
     @staticmethod
     def executor(env):
@@ -1598,7 +1586,7 @@ class ImportPolicyCommunityNull(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.100.0/24', community=['65100:10'])
         e1.add_route('192.168.110.0/24', community=['65100:10', '65100:20'])
@@ -1618,18 +1606,18 @@ class ImportPolicyCommunityNull(object):
         q2 = env.q2
         adj_out = g1.get_adj_rib_out(q1)
         for path in adj_out:
-            assert_true(community_exists(path, '65100:10'))
+            assert community_exists(path, '65100:10')
             if path['nlri']['prefix'] == '192.168.110.0/24':
-                assert_true(community_exists(path, '65100:20'))
+                assert community_exists(path, '65100:20')
             if path['nlri']['prefix'] == '192.168.120.0/24':
-                assert_true(community_exists(path, '65100:30'))
+                assert community_exists(path, '65100:30')
         adj_out = g1.get_adj_rib_out(q2)
         for path in adj_out:
-            assert_false(community_exists(path, '65100:10'))
+            assert not community_exists(path, '65100:10')
             if path['nlri']['prefix'] == '192.168.110.0/24':
-                assert_false(community_exists(path, '65100:20'))
+                assert not community_exists(path, '65100:20')
             if path['nlri']['prefix'] == '192.168.120.0/24':
-                assert_false(community_exists(path, '65100:30'))
+                assert not community_exists(path, '65100:30')
 
     @staticmethod
     def executor(env):
@@ -1693,18 +1681,18 @@ class ExportPolicyCommunityAdd(object):
 
         adj_out = g1.get_adj_rib_out(q1)
         for path in adj_out:
-            assert_true(community_exists(path, '65100:10'))
-            assert_false(community_exists(path, '65100:20'))
+            assert community_exists(path, '65100:10')
+            assert not community_exists(path, '65100:20')
 
         local_rib = g1.get_local_rib(q2)
         for path in local_rib[0]['paths']:
-            assert_true(community_exists(path, '65100:10'))
-            assert_false(community_exists(path, '65100:20'))
+            assert community_exists(path, '65100:10')
+            assert not community_exists(path, '65100:20')
 
         adj_out = g1.get_adj_rib_out(q2)
         for path in adj_out:
-            assert_true(community_exists(path, '65100:10'))
-            assert_true(community_exists(path, '65100:20'))
+            assert community_exists(path, '65100:10')
+            assert community_exists(path, '65100:20')
 
     @staticmethod
     def executor(env):
@@ -1768,18 +1756,18 @@ class ExportPolicyCommunityReplace(object):
 
         adj_out = g1.get_adj_rib_out(q1)
         for path in adj_out:
-            assert_true(community_exists(path, '65100:10'))
-            assert_false(community_exists(path, '65100:20'))
+            assert community_exists(path, '65100:10')
+            assert not community_exists(path, '65100:20')
 
         local_rib = g1.get_local_rib(q2)
         for path in local_rib[0]['paths']:
-            assert_true(community_exists(path, '65100:10'))
-            assert_false(community_exists(path, '65100:20'))
+            assert community_exists(path, '65100:10')
+            assert not community_exists(path, '65100:20')
 
         adj_out = g1.get_adj_rib_out(q2)
         for path in adj_out:
-            assert_false(community_exists(path, '65100:10'))
-            assert_true(community_exists(path, '65100:20'))
+            assert not community_exists(path, '65100:10')
+            assert community_exists(path, '65100:20')
 
     @staticmethod
     def executor(env):
@@ -1843,21 +1831,21 @@ class ExportPolicyCommunityRemove(object):
 
         adj_out = g1.get_adj_rib_out(q1)
         for path in adj_out:
-            assert_true(community_exists(path, '65100:10'))
-            assert_true(community_exists(path, '65100:20'))
-            assert_true(community_exists(path, '65100:30'))
+            assert community_exists(path, '65100:10')
+            assert community_exists(path, '65100:20')
+            assert community_exists(path, '65100:30')
 
         local_rib = g1.get_local_rib(q2)
         for path in local_rib[0]['paths']:
-            assert_true(community_exists(path, '65100:10'))
-            assert_true(community_exists(path, '65100:20'))
-            assert_true(community_exists(path, '65100:30'))
+            assert community_exists(path, '65100:10')
+            assert community_exists(path, '65100:20')
+            assert community_exists(path, '65100:30')
 
         adj_out = g1.get_adj_rib_out(q2)
         for path in adj_out:
-            assert_true(community_exists(path, '65100:10'))
-            assert_false(community_exists(path, '65100:20'))
-            assert_false(community_exists(path, '65100:30'))
+            assert community_exists(path, '65100:10')
+            assert not community_exists(path, '65100:20')
+            assert not community_exists(path, '65100:30')
 
     @staticmethod
     def executor(env):
@@ -1921,21 +1909,21 @@ class ExportPolicyCommunityNull(object):
 
         adj_out = g1.get_adj_rib_out(q1)
         for path in adj_out:
-            assert_true(community_exists(path, '65100:10'))
-            assert_true(community_exists(path, '65100:20'))
-            assert_true(community_exists(path, '65100:30'))
+            assert community_exists(path, '65100:10')
+            assert community_exists(path, '65100:20')
+            assert community_exists(path, '65100:30')
 
         local_rib = g1.get_local_rib(q2)
         for path in local_rib[0]['paths']:
-            assert_true(community_exists(path, '65100:10'))
-            assert_true(community_exists(path, '65100:20'))
-            assert_true(community_exists(path, '65100:30'))
+            assert community_exists(path, '65100:10')
+            assert community_exists(path, '65100:20')
+            assert community_exists(path, '65100:30')
 
         adj_out = g1.get_adj_rib_out(q2)
         for path in adj_out:
-            assert_false(community_exists(path, '65100:10'))
-            assert_false(community_exists(path, '65100:20'))
-            assert_false(community_exists(path, '65100:30'))
+            assert not community_exists(path, '65100:10')
+            assert not community_exists(path, '65100:20')
+            assert not community_exists(path, '65100:30')
 
     @staticmethod
     def executor(env):
@@ -1979,7 +1967,7 @@ class ImportPolicyMedReplace(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.100.0/24', med=300)
 
@@ -1997,13 +1985,13 @@ class ImportPolicyMedReplace(object):
         q2 = env.q2
 
         adj_out = g1.get_adj_rib_out(q1)
-        assert_true(metric(adj_out[0]) == 300)
+        assert metric(adj_out[0]) == 300
 
         local_rib = g1.get_local_rib(q2)
-        assert_true(metric(local_rib[0]['paths'][0]) == 100)
+        assert metric(local_rib[0]['paths'][0]) == 300
 
         adj_out = g1.get_adj_rib_out(q2)
-        assert_true(metric(adj_out[0]) == 100)
+        assert metric(adj_out[0]) == 100
 
     @staticmethod
     def executor(env):
@@ -2040,7 +2028,7 @@ class ImportPolicyMedAdd(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.100.0/24', med=300)
 
@@ -2058,13 +2046,13 @@ class ImportPolicyMedAdd(object):
         q2 = env.q2
 
         adj_out = g1.get_adj_rib_out(q1)
-        assert_true(metric(adj_out[0]) == 300)
+        assert metric(adj_out[0]) == 300
 
         local_rib = g1.get_local_rib(q2)
-        assert_true(metric(local_rib[0]['paths'][0]) == 400)
+        assert metric(local_rib[0]['paths'][0]) == 300
 
         adj_out = g1.get_adj_rib_out(q2)
-        assert_true(metric(adj_out[0]) == 400)
+        assert metric(adj_out[0]) == 400
 
     @staticmethod
     def executor(env):
@@ -2101,7 +2089,7 @@ class ImportPolicyMedSub(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.100.0/24', med=300)
 
@@ -2119,13 +2107,13 @@ class ImportPolicyMedSub(object):
         q2 = env.q2
 
         adj_out = g1.get_adj_rib_out(q1)
-        assert_true(metric(adj_out[0]) == 300)
+        assert metric(adj_out[0]) == 300
 
         local_rib = g1.get_local_rib(q2)
-        assert_true(metric(local_rib[0]['paths'][0]) == 200)
+        assert metric(local_rib[0]['paths'][0]) == 300
 
         adj_out = g1.get_adj_rib_out(q2)
-        assert_true(metric(adj_out[0]) == 200)
+        assert metric(adj_out[0]) == 200
 
     @staticmethod
     def executor(env):
@@ -2180,13 +2168,13 @@ class ExportPolicyMedReplace(object):
         q2 = env.q2
 
         adj_out = g1.get_adj_rib_out(q1)
-        assert_true(metric(adj_out[0]) == 300)
+        assert metric(adj_out[0]) == 300
 
         local_rib = g1.get_local_rib(q2)
-        assert_true(metric(local_rib[0]['paths'][0]) == 300)
+        assert metric(local_rib[0]['paths'][0]) == 300
 
         adj_out = g1.get_adj_rib_out(q2)
-        assert_true(metric(adj_out[0]) == 100)
+        assert metric(adj_out[0]) == 100
 
     @staticmethod
     def executor(env):
@@ -2241,13 +2229,13 @@ class ExportPolicyMedAdd(object):
         q2 = env.q2
 
         adj_out = g1.get_adj_rib_out(q1)
-        assert_true(metric(adj_out[0]) == 300)
+        assert metric(adj_out[0]) == 300
 
         local_rib = g1.get_local_rib(q2)
-        assert_true(metric(local_rib[0]['paths'][0]) == 300)
+        assert metric(local_rib[0]['paths'][0]) == 300
 
         adj_out = g1.get_adj_rib_out(q2)
-        assert_true(metric(adj_out[0]) == 400)
+        assert metric(adj_out[0]) == 400
 
     @staticmethod
     def executor(env):
@@ -2302,13 +2290,13 @@ class ExportPolicyMedSub(object):
         q2 = env.q2
 
         adj_out = g1.get_adj_rib_out(q1)
-        assert_true(metric(adj_out[0]) == 300)
+        assert metric(adj_out[0]) == 300
 
         local_rib = g1.get_local_rib(q2)
-        assert_true(metric(local_rib[0]['paths'][0]) == 300)
+        assert metric(local_rib[0]['paths'][0]) == 300
 
         adj_out = g1.get_adj_rib_out(q2)
-        assert_true(metric(adj_out[0]) == 200)
+        assert metric(adj_out[0]) == 200
 
     @staticmethod
     def executor(env):
@@ -2383,19 +2371,19 @@ class ExportPolicyAsPathPrepend(object):
         q2 = env.q2
 
         path = g1.get_adj_rib_out(q1, prefix='192.168.20.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_adj_rib_out(q1, prefix='192.168.200.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_local_rib(q2, prefix='192.168.20.0/24')[0]['paths'][0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_adj_rib_out(q2, prefix='192.168.20.0/24')[0]
-        assert_true(path['aspath'] == ([65005] * 5) + [e1.asn])
+        assert path['aspath'] == ([65005] * 5 + [e1.asn])
 
         path = g1.get_adj_rib_out(q2, prefix='192.168.200.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
     @staticmethod
     def executor(env):
@@ -2440,7 +2428,7 @@ class ImportPolicyAsPathPrependLastAS(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.20.0/24')
         e1.add_route('192.168.200.0/24')
@@ -2460,19 +2448,19 @@ class ImportPolicyAsPathPrependLastAS(object):
         q2 = env.q2
 
         path = g1.get_adj_rib_out(q1, prefix='192.168.20.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_adj_rib_out(q1, prefix='192.168.200.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_local_rib(q2, prefix='192.168.20.0/24')[0]['paths'][0]
-        assert_true(path['aspath'] == ([e1.asn] * 5) + [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_adj_rib_out(q2, prefix='192.168.20.0/24')[0]
-        assert_true(path['aspath'] == ([e1.asn] * 5) + [e1.asn])
+        assert path['aspath'] == ([e1.asn] * 5 + [e1.asn])
 
         path = g1.get_adj_rib_out(q2, prefix='192.168.200.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
     @staticmethod
     def executor(env):
@@ -2537,19 +2525,19 @@ class ExportPolicyAsPathPrependLastAS(object):
         q2 = env.q2
 
         path = g1.get_adj_rib_out(q1, prefix='192.168.20.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_adj_rib_out(q1, prefix='192.168.200.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_local_rib(q2, prefix='192.168.20.0/24')[0]['paths'][0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
         path = g1.get_adj_rib_out(q2, prefix='192.168.20.0/24')[0]
-        assert_true(path['aspath'] == ([e1.asn] * 5) + [e1.asn])
+        assert path['aspath'] == ([e1.asn] * 5 + [e1.asn])
 
         path = g1.get_adj_rib_out(q2, prefix='192.168.200.0/24')[0]
-        assert_true(path['aspath'] == [e1.asn])
+        assert path['aspath'] == [e1.asn]
 
     @staticmethod
     def executor(env):
@@ -2591,7 +2579,7 @@ class ImportPolicyExCommunityOriginCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.20.0/24', extendedcommunity='origin:{0}:200'.format((65001 << 16) + 65100))
         e1.add_route('192.168.200.0/24', extendedcommunity='origin:{0}:100'.format((65001 << 16) + 65200))
@@ -2642,7 +2630,7 @@ class ImportPolicyExCommunityTargetCondition(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.20.0/24', extendedcommunity='target:65010:320')
         e1.add_route('192.168.200.0/24', extendedcommunity='target:55000:320')
@@ -2722,7 +2710,7 @@ class ImportPolicyExCommunityAdd(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.10.0/24')
 
@@ -2740,9 +2728,9 @@ class ImportPolicyExCommunityAdd(object):
         q1 = env.q1
         q2 = env.q2
         path = g1.get_adj_rib_out(q1)[0]
-        assert_false(ext_community_exists(path, 'RT:65000:1'))
+        assert not ext_community_exists(path, 'RT:65000:1')
         path = g1.get_adj_rib_out(q2)[0]
-        assert_true(ext_community_exists(path, 'RT:65000:1'))
+        assert ext_community_exists(path, 'RT:65000:1')
 
     @staticmethod
     def executor(env):
@@ -2802,7 +2790,7 @@ class ImportPolicyExCommunityAdd2(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.10.0/24', extendedcommunity='target:65000:1')
 
@@ -2820,14 +2808,14 @@ class ImportPolicyExCommunityAdd2(object):
         q1 = env.q1
         q2 = env.q2
         path = g1.get_adj_rib_out(q1)[0]
-        assert_true(ext_community_exists(path, 'RT:65000:1'))
-        assert_false(ext_community_exists(path, 'RT:65100:100'))
+        assert ext_community_exists(path, 'RT:65000:1')
+        assert not ext_community_exists(path, 'RT:65100:100')
         path = g1.get_local_rib(q2)[0]['paths'][0]
-        assert_true(ext_community_exists(path, 'RT:65000:1'))
-        assert_true(ext_community_exists(path, 'RT:65100:100'))
+        assert ext_community_exists(path, 'RT:65000:1')
+        assert not ext_community_exists(path, 'RT:65100:100')
         path = g1.get_adj_rib_out(q2)[0]
-        assert_true(ext_community_exists(path, 'RT:65000:1'))
-        assert_true(ext_community_exists(path, 'RT:65100:100'))
+        assert ext_community_exists(path, 'RT:65000:1')
+        assert ext_community_exists(path, 'RT:65100:100')
 
     @staticmethod
     def executor(env):
@@ -2887,7 +2875,7 @@ class ImportPolicyExCommunityMultipleAdd(object):
 
         policy = {'name': 'policy0',
                   'statements': [st0]}
-        g1.add_policy(policy, q2, 'import')
+        g1.add_policy(policy, q2, 'export')
 
         e1.add_route('192.168.10.0/24')
 
@@ -2905,14 +2893,14 @@ class ImportPolicyExCommunityMultipleAdd(object):
         q1 = env.q1
         q2 = env.q2
         path = g1.get_adj_rib_out(q1)[0]
-        assert_false(ext_community_exists(path, 'RT:65100:100'))
-        assert_false(ext_community_exists(path, 'RT:100:100'))
+        assert not ext_community_exists(path, 'RT:65100:100')
+        assert not ext_community_exists(path, 'RT:100:100')
         path = g1.get_local_rib(q2)[0]['paths'][0]
-        assert_true(ext_community_exists(path, 'RT:65100:100'))
-        assert_true(ext_community_exists(path, 'RT:100:100'))
+        assert not ext_community_exists(path, 'RT:65100:100')
+        assert not ext_community_exists(path, 'RT:100:100')
         path = g1.get_adj_rib_out(q2)[0]
-        assert_true(ext_community_exists(path, 'RT:65100:100'))
-        assert_true(ext_community_exists(path, 'RT:100:100'))
+        assert ext_community_exists(path, 'RT:65100:100')
+        assert ext_community_exists(path, 'RT:100:100')
 
     @staticmethod
     def executor(env):
@@ -2990,11 +2978,11 @@ class ExportPolicyExCommunityAdd(object):
         q1 = env.q1
         q2 = env.q2
         path = g1.get_adj_rib_out(q1)[0]
-        assert_false(ext_community_exists(path, 'RT:65000:1'))
+        assert not ext_community_exists(path, 'RT:65000:1')
         path = g1.get_local_rib(q2)[0]['paths'][0]
-        assert_false(ext_community_exists(path, 'RT:65000:1'))
+        assert not ext_community_exists(path, 'RT:65000:1')
         path = g1.get_adj_rib_out(q2)[0]
-        assert_true(ext_community_exists(path, 'RT:65000:1'))
+        assert ext_community_exists(path, 'RT:65000:1')
 
     @staticmethod
     def executor(env):
@@ -3181,14 +3169,6 @@ class TestGoBGPBase(unittest.TestCase):
 
     def test(self):
         for e in self.executors:
-            yield e
+            e(self)
+            print('[PASS] %s' % e.__qualname__.split('.')[0], file=sys.stderr, flush=True)
 
-
-if __name__ == '__main__':
-    output = local("which docker 2>&1 > /dev/null ; echo $?", capture=True)
-    if int(output) != 0:
-        print("docker not found")
-        sys.exit(1)
-
-    nose.main(argv=sys.argv, addplugins=[OptionParser()],
-              defaultTest=sys.argv[0])

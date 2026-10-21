@@ -21,15 +21,15 @@ import time
 import collections
 collections.Callable = collections.abc.Callable
 
-import nose
 
-from lib.noseplugin import OptionParser, parser_option
+from lib.noseplugin import parser_option
 
 from lib import base
 from lib.base import (
     BGP_FSM_IDLE,
     BGP_FSM_ESTABLISHED,
     local,
+    wait_for,
 )
 from lib.gobgp import GoBGPContainer
 from lib.exabgp import ExaBGPContainer
@@ -83,37 +83,24 @@ class GoBGPTestBase(unittest.TestCase):
 
     def test_02_check_gobgp_local_rib(self):
         for rs_client in self.quaggas.values():
-            done = False
-            for _ in range(self.retry_limit):
-                if done:
-                    break
-
+            def _has_expected_routes():
                 state = self.gobgp.get_neighbor_state(rs_client)
                 self.assertEqual(state, BGP_FSM_ESTABLISHED)
                 local_rib = self.gobgp.get_local_rib(rs_client)
                 if len(local_rib) < (len(self.quaggas) - 1):
-                    time.sleep(self.wait_per_retry)
-                    continue
+                    return False
 
                 self.assertEqual(len(local_rib), 4)
-                done = True
+                return True
 
-            if done:
-                continue
-            # should not reach here
-            raise AssertionError
+            wait_for(
+                _has_expected_routes,
+                timeout=self.retry_limit * self.wait_per_retry,
+                interval=self.wait_per_retry,
+            )
 
     def test_03_stop_q2_and_check_neighbor_status(self):
         q2 = self.quaggas['q2']
         q2.remove()
         self.gobgp.wait_for(expected_state=BGP_FSM_IDLE, peer=q2)
 
-
-if __name__ == '__main__':
-    output = local("which docker 2>&1 > /dev/null ; echo $?", capture=True)
-    if int(output) != 0:
-        print("docker not found")
-        sys.exit(1)
-
-    nose.main(argv=sys.argv, addplugins=[OptionParser()],
-              defaultTest=sys.argv[0])
