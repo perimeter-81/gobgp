@@ -21,27 +21,13 @@ import unittest
 import collections
 collections.Callable = collections.abc.Callable
 
-import nose
 
-from lib.noseplugin import OptionParser, parser_option
+from lib.noseplugin import parser_option
 
 from lib import base
-from lib.base import BGP_FSM_ESTABLISHED, local
+from lib.base import BGP_FSM_ESTABLISHED, local, wait_for
 from lib.gobgp import GoBGPContainer
 from lib.quagga import QuaggaBGPContainer
-
-
-def wait_for(f, timeout=120):
-    interval = 1
-    count = 0
-    while True:
-        if f():
-            return
-
-        time.sleep(interval)
-        count += interval
-        if count >= timeout:
-            raise Exception('timeout')
 
 
 class GoBGPTestBase(unittest.TestCase):
@@ -286,12 +272,3 @@ class GoBGPTestBase(unittest.TestCase):
         self.assertEqual(self.rr.peer_name(self.acme1), ar0['nexthop'])
         self.assertEqual(100, ar0['local-pref'])
 
-
-if __name__ == '__main__':
-    output = local("which docker 2>&1 > /dev/null ; echo $?", capture=True)
-    if int(output) != 0:
-        print("docker not found")
-        sys.exit(1)
-
-    nose.main(argv=sys.argv, addplugins=[OptionParser()],
-              defaultTest=sys.argv[0])

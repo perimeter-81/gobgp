@@ -21,15 +21,15 @@ import unittest
 import collections
 collections.Callable = collections.abc.Callable
 
-import nose
 
-from lib.noseplugin import OptionParser, parser_option
+from lib.noseplugin import parser_option
 
 from lib import base
 from lib.base import (
     Bridge,
     BGP_FSM_ESTABLISHED,
     local,
+    wait_for,
 )
 from lib.gobgp import GoBGPContainer
 from lib.quagga import QuaggaBGPContainer
@@ -262,25 +262,32 @@ class GoBGPTestBase(unittest.TestCase):
             return n
 
         def validate_nexthops(peers):
-            interval = 1
-            count = 0
-            timeout = 30
-            while True:
-                valid = False
-                nhs = nexthops()
-                if len(nhs) == len(peers):
-                    valid = True
-                    for peer in peers:
-                        if g1.peers[peer]['neigh_addr'].split('/')[0] not in nhs:
-                            valid = False
-                            break
-                if valid:
-                    return
+            current_nexthops = []
+            expected_nexthops = [
+                g1.peers[peer]['neigh_addr'].split('/')[0] for peer in peers
+            ]
 
-                time.sleep(interval)
-                count += interval
-                if count >= timeout:
-                    raise Exception(nhs)
+            def _valid_nexthops():
+                nonlocal current_nexthops
+                current_nexthops = nexthops()
+                if len(current_nexthops) != len(expected_nexthops):
+                    return False
+                for nexthop in expected_nexthops:
+                    if nexthop not in current_nexthops:
+                        return False
+                return True
+
+            def _timeout_message():
+                return 'timeout waiting for zebra nexthops: expected {0}, got {1}'.format(
+                    expected_nexthops,
+                    current_nexthops,
+                )
+
+            wait_for(
+                _valid_nexthops,
+                timeout=30,
+                timeout_message=_timeout_message,
+            )
 
         validate_nexthops([g4, g5])
 
@@ -302,13 +309,3 @@ class GoBGPTestBase(unittest.TestCase):
 
         g2.local('gobgp g ri add 10.0.10.0/24 med 20')
         validate_nexthops([g3])
-
-
-if __name__ == '__main__':
-    output = local("which docker 2>&1 > /dev/null ; echo $?", capture=True)
-    if int(output) != 0:
-        print("docker not found")
-        sys.exit(1)
-
-    nose.main(argv=sys.argv, addplugins=[OptionParser()],
-              defaultTest=sys.argv[0])

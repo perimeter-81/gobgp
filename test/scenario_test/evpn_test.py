@@ -22,15 +22,15 @@ import unittest
 import collections
 collections.Callable = collections.abc.Callable
 
-import nose
 
-from lib.noseplugin import OptionParser, parser_option
+from lib.noseplugin import parser_option
 
 from lib import base
 from lib.base import (
     BGP_FSM_ESTABLISHED,
     BGP_ATTR_TYPE_EXTENDED_COMMUNITIES,
     local,
+    wait_for_completion,
 )
 from lib.gobgp import GoBGPContainer
 
@@ -93,17 +93,11 @@ class GoBGPTestBase(unittest.TestCase):
         path = dst['paths'][0]
         self.assertEqual(path['nexthop'], '0.0.0.0')
 
-        interval = 1
-        timeout = int(30 / interval)
-        done = False
-        for _ in range(timeout):
-            if done:
-                break
+        def _has_expected_route():
             grib = self.g2.get_global_rib(rf='evpn')
 
             if len(grib) < 1:
-                time.sleep(interval)
-                continue
+                return False
 
             self.assertEqual(len(grib), 1)
             dst = grib[0]
@@ -111,7 +105,9 @@ class GoBGPTestBase(unittest.TestCase):
             path = dst['paths'][0]
             n_addrs = [i[1].split('/')[0] for i in self.g1.ip_addrs]
             self.assertTrue(path['nexthop'] in n_addrs)
-            done = True
+            return True
+
+        wait_for_completion(_has_expected_route, timeout=30)
 
     def test_03_check_mac_mobility(self):
         self.g2.local('gobgp global rib add '
@@ -175,12 +171,3 @@ class GoBGPTestBase(unittest.TestCase):
         # no mac mobility for this route
         self.assertEqual(get_mac_mobility_sequence(path['attrs']), -1)
 
-
-if __name__ == '__main__':
-    output = local("which docker 2>&1 > /dev/null ; echo $?", capture=True)
-    if int(output) != 0:
-        print("docker not found")
-        sys.exit(1)
-
-    nose.main(argv=sys.argv, addplugins=[OptionParser()],
-              defaultTest=sys.argv[0])

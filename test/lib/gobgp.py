@@ -415,6 +415,9 @@ class GoBGPContainer(BGPContainer):
                 afi_safi_list.append({'config': {'afi-safi-name': 'ipv4-mup'}})
                 afi_safi_list.append({'config': {'afi-safi-name': 'ipv6-mup'}})
 
+            if info.get('ls'):
+                afi_safi_list.append({'config': {'afi-safi-name': 'ls'}})
+
             neigh_addr = None
             interface = None
             peer_as = None
@@ -450,10 +453,12 @@ class GoBGPContainer(BGPContainer):
                 n['as-path-options']['config']['replace-peer-as'] = info['replace_peer_as']
 
             if ':' in info['local_addr']:
-                n['transport']['config']['local-address'] = info['local_addr'].split('/')[0]
+                n['transport']['config']['local-address'] = info['local_addr'].split('/')[0].split('%')[0]
 
             if info['passive']:
                 n['transport']['config']['passive-mode'] = True
+            if info['bind_interface']:
+                n['transport']['config']['bind-interface'] = info['bind_interface']
 
             if info['is_rs_client']:
                 n['route-server'] = {'config': {'route-server-client': True}}
